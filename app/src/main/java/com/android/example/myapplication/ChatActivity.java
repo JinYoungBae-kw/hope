@@ -18,12 +18,24 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.FileProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import com.android.example.myapplication.api.ApiService;
+import com.android.example.myapplication.api.RetrofitClient;
+import com.android.example.myapplication.api.ServerResponse;
+
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+
+import okhttp3.MultipartBody;
+import okhttp3.RequestBody;
+import retrofit2.Call;
 
 public class ChatActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
@@ -131,19 +143,50 @@ public class ChatActivity extends AppCompatActivity {
     }
 
     private void handleVideoResult(String videoPath) {
-        // Add user message with video
+        // 1. 사용자 메시지로 영상 추가
         messages.add(new ChatMessage("Video sent", ChatMessage.TYPE_USER, videoPath));
         chatAdapter.notifyItemInserted(messages.size() - 1);
         recyclerView.scrollToPosition(messages.size() - 1);
 
-        // Simulate processing and add bot response after delay
-        new Handler().postDelayed(() -> {
-            String interpretation = interpretSignLanguage(videoPath);
-            messages.add(new ChatMessage(interpretation, ChatMessage.TYPE_BOT));
+        // 2. 영상 파일을 서버에 업로드
+        Uri videoUri = Uri.parse(videoPath);
+        File videoFile = getFileFromUri(videoUri);
+        if (videoFile == null || !videoFile.exists()) {
+            messages.add(new ChatMessage("영상 파일을 찾을 수 없습니다.", ChatMessage.TYPE_BOT));
             chatAdapter.notifyItemInserted(messages.size() - 1);
-            recyclerView.scrollToPosition(messages.size() - 1);
-        }, 2000); // 2 second delay to simulate processing
+            return;
+        }
+
+        // 3. Retrofit 구성
+        RequestBody requestFile = RequestBody.create(videoFile, okhttp3.MediaType.parse("video/mp4"));
+        MultipartBody.Part body = MultipartBody.Part.createFormData("file", videoFile.getName(), requestFile);
+
+        ApiService apiService = RetrofitClient.getClient().create(ApiService.class);
+        Call<ServerResponse> call = apiService.uploadVideo(body);
+
+        // 4. 서버 응답 처리
+        call.enqueue(new retrofit2.Callback<ServerResponse>() {
+            @Override
+            public void onResponse(Call<ServerResponse> call, retrofit2.Response<ServerResponse> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    String sentence = response.body().sentence;
+                    messages.add(new ChatMessage(sentence, ChatMessage.TYPE_BOT));
+                } else {
+                    messages.add(new ChatMessage("서버 응답 실패", ChatMessage.TYPE_BOT));
+                }
+                chatAdapter.notifyItemInserted(messages.size() - 1);
+                recyclerView.scrollToPosition(messages.size() - 1);
+            }
+
+            @Override
+            public void onFailure(Call<ServerResponse> call, Throwable t) {
+                messages.add(new ChatMessage("서버 연결 실패: " + t.getMessage(), ChatMessage.TYPE_BOT));
+                chatAdapter.notifyItemInserted(messages.size() - 1);
+                recyclerView.scrollToPosition(messages.size() - 1);
+            }
+        });
     }
+
 
     private String interpretSignLanguage(String videoPath) {
         // This is where you would integrate with your sign language interpretation API/model
@@ -152,5 +195,26 @@ public class ChatActivity extends AppCompatActivity {
                "\"Hello, how are you today?\"\n\n" +
                "The signs were clear and the interpretation confidence is high.";
     }
+
+    private File getFileFromUri(Uri uri) {
+        File file = null;
+        try {
+            String fileName = "uploaded_video.mp4";
+            File tempFile = new File(getCacheDir(), fileName);
+            try (InputStream inputStream = getContentResolver().openInputStream(uri);
+                 OutputStream outputStream = new FileOutputStream(tempFile)) {
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                while ((bytesRead = inputStream.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, bytesRead);
+                }
+                file = tempFile;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return file;
+    }
+
 
 }
